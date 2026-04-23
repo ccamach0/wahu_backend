@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import pool from '../config/db.js';
 import { authenticate, optionalAuth } from '../middleware/auth.js';
 import { uploadSingle, processImage } from '../middleware/imageUpload.js';
-import { uploadToR2, deleteFromR2 } from '../services/r2.js';
+import { uploadToCloudinary, deleteFromCloudinary } from '../services/cloudinary.js';
 
 const router = Router();
 
@@ -110,7 +110,7 @@ router.post('/', authenticate, uploadSingle, processImage, async (req, res) => {
 
     let avatar_url = null;
     if (req.file) {
-      avatar_url = await uploadToR2(req.file.buffer, req.file.originalname, 'pets/avatars');
+      avatar_url = await uploadToCloudinary(req.file.buffer, req.file.originalname, 'pets/avatars');
     }
 
     const id = uuidv4();
@@ -167,7 +167,7 @@ router.post('/:pet_id/gallery', authenticate, uploadSingle, processImage, async 
     if (!pet.rows.length) return res.status(404).json({ error: 'Pet not found' });
     if (pet.rows[0].companion_id !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
 
-    const image_url = await uploadToR2(req.file.buffer, req.file.originalname, `pets/${req.params.pet_id}`);
+    const image_url = await uploadToCloudinary(req.file.buffer, req.file.originalname, `pets/${req.params.pet_id}`);
 
     const result = await pool.query(
       `INSERT INTO pet_gallery (id, pet_id, image_url, "order")
@@ -216,7 +216,7 @@ router.delete('/:pet_id/gallery/:image_id', authenticate, async (req, res) => {
     const image = await pool.query('SELECT image_url FROM pet_gallery WHERE id = $1 AND pet_id = $2', [req.params.image_id, req.params.pet_id]);
     if (!image.rows.length) return res.status(404).json({ error: 'Image not found' });
 
-    await deleteFromR2(image.rows[0].image_url);
+    await deleteFromCloudinary(image.rows[0].image_url);
     await pool.query('DELETE FROM pet_gallery WHERE id = $1', [req.params.image_id]);
 
     res.status(204).send();

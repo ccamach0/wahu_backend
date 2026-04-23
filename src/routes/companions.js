@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import pool from '../config/db.js';
 import { authenticate, optionalAuth } from '../middleware/auth.js';
 import { uploadSingle, processImage } from '../middleware/imageUpload.js';
-import { uploadToR2, deleteFromR2 } from '../services/r2.js';
+import { uploadToCloudinary, deleteFromCloudinary } from '../services/cloudinary.js';
 
 const router = Router();
 
@@ -33,7 +33,7 @@ router.put('/:companion_id', authenticate, uploadSingle, processImage, async (re
   try {
     let avatar_url = undefined;
     if (req.file) {
-      avatar_url = await uploadToR2(req.file.buffer, req.file.originalname, 'companions/avatars');
+      avatar_url = await uploadToCloudinary(req.file.buffer, req.file.originalname, 'companions/avatars');
     }
 
     const updateFields = [];
@@ -76,7 +76,7 @@ router.post('/:companion_id/gallery', authenticate, uploadSingle, processImage, 
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
   try {
-    const image_url = await uploadToR2(req.file.buffer, req.file.originalname, `companions/${req.params.companion_id}`);
+    const image_url = await uploadToCloudinary(req.file.buffer, req.file.originalname, `companions/${req.params.companion_id}`);
 
     const result = await pool.query(
       `INSERT INTO companion_gallery (id, companion_id, image_url, "order")
@@ -128,7 +128,7 @@ router.delete('/:companion_id/gallery/:image_id', authenticate, async (req, res)
     );
     if (!image.rows.length) return res.status(404).json({ error: 'Image not found' });
 
-    await deleteFromR2(image.rows[0].image_url);
+    await deleteFromCloudinary(image.rows[0].image_url);
     await pool.query('DELETE FROM companion_gallery WHERE id = $1', [req.params.image_id]);
 
     res.status(204).send();
