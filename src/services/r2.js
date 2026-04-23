@@ -18,6 +18,7 @@ export async function uploadToR2(buffer, filename, folder = 'images') {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'image/jpeg',
+        'x-amz-content-sha256': 'UNSIGNED-PAYLOAD',
       },
       body: buffer,
     });
