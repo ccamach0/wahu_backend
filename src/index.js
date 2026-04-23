@@ -123,6 +123,26 @@ const runMigrations = async () => {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pet_gallery (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      image_url VARCHAR NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      "order" INT DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_pet_gallery_pet_id ON pet_gallery(pet_id);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS companion_gallery (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      companion_id UUID NOT NULL REFERENCES companions(id) ON DELETE CASCADE,
+      image_url VARCHAR NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      "order" INT DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_companion_gallery_companion_id ON companion_gallery(companion_id);
+  `);
 };
 
 app.listen(PORT, async () => {

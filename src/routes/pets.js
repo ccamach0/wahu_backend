@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import pool from '../config/db.js';
 import { authenticate, optionalAuth } from '../middleware/auth.js';
+import { uploadSingle, processImage } from '../middleware/imageUpload.js';
+import { uploadToR2, deleteFromR2 } from '../services/r2.js';
 
 const router = Router();
 
@@ -98,13 +100,18 @@ router.get('/:username', optionalAuth, async (req, res) => {
 });
 
 // Crear mascota
-router.post('/', authenticate, async (req, res) => {
-  const { name, username, breed, species, location, bio, avatar_url } = req.body;
+router.post('/', authenticate, uploadSingle, processImage, async (req, res) => {
+  const { name, username, breed, species, location, bio } = req.body;
   if (!name || !username) return res.status(400).json({ error: 'Nombre y username requeridos' });
 
   try {
     const exists = await pool.query('SELECT id FROM pets WHERE username=$1', [username]);
     if (exists.rows.length) return res.status(409).json({ error: 'Username ya en uso' });
+
+    let avatar_url = null;
+    if (req.file) {
+      avatar_url = await uploadToR2(req.file.buffer, req.file.originalname, 'pets/avatars');
+    }
 
     const id = uuidv4();
     const result = await pool.query(
@@ -148,6 +155,95 @@ router.delete('/:id', authenticate, async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Error al eliminar mascota' });
+  }
+});
+
+// Galería de mascota - Subir foto
+router.post('/:pet_id/gallery', authenticate, uploadSingle, processImage, async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  try {
+    const pet = await pool.query('SELECT companion_id FROM pets WHERE id = $1', [req.params.pet_id]);
+    if (!pet.rows.length) return res.status(404).json({ error: 'Pet not found' });
+    if (pet.rows[0].companion_id !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
+
+    const image_url = await uploadToR2(req.file.buffer, req.file.originalname, `pets/${req.params.pet_id}`);
+
+    const result = await pool.query(
+      `INSERT INTO pet_gallery (id, pet_id, image_url, "order")
+       VALUES ($1, $2, $3, (SELECT COALESCE(MAX("order"), -1) + 1 FROM pet_gallery WHERE pet_id = $2))
+       RETURNING id, image_url, created_at`,
+      [uuidv4(), req.params.pet_id, image_url]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error uploading image' });
+  }
+});
+
+// Galería de mascota - Obtener fotos
+router.get('/:pet_id/gallery', optionalAuth, async (req, res) => {
+  const { limit = 10, offset = 0 } = req.query;
+
+  try {
+    const [images, total] = await Promise.all([
+      pool.query(
+        `SELECT id, image_url, created_at FROM pet_gallery WHERE pet_id = $1 ORDER BY "order" ASC LIMIT $2 OFFSET $3`,
+        [req.params.pet_id, parseInt(limit), parseInt(offset)]
+      ),
+      pool.query('SELECT COUNT(*) FROM pet_gallery WHERE pet_id = $1', [req.params.pet_id]),
+    ]);
+
+    res.json({
+      total: parseInt(total.rows[0].count),
+      images: images.rows,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error fetching gallery' });
+  }
+});
+
+// Galería de mascota - Eliminar foto
+router.delete('/:pet_id/gallery/:image_id', authenticate, async (req, res) => {
+  try {
+    const pet = await pool.query('SELECT companion_id FROM pets WHERE id = $1', [req.params.pet_id]);
+    if (!pet.rows.length) return res.status(404).json({ error: 'Pet not found' });
+    if (pet.rows[0].companion_id !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
+
+    const image = await pool.query('SELECT image_url FROM pet_gallery WHERE id = $1 AND pet_id = $2', [req.params.image_id, req.params.pet_id]);
+    if (!image.rows.length) return res.status(404).json({ error: 'Image not found' });
+
+    await deleteFromR2(image.rows[0].image_url);
+    await pool.query('DELETE FROM pet_gallery WHERE id = $1', [req.params.image_id]);
+
+    res.status(204).send();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error deleting image' });
+  }
+});
+
+// Galería de mascota - Reordenar
+router.put('/:pet_id/gallery/reorder', authenticate, async (req, res) => {
+  const { imageIds } = req.body;
+  if (!Array.isArray(imageIds)) return res.status(400).json({ error: 'imageIds must be an array' });
+
+  try {
+    const pet = await pool.query('SELECT companion_id FROM pets WHERE id = $1', [req.params.pet_id]);
+    if (!pet.rows.length) return res.status(404).json({ error: 'Pet not found' });
+    if (pet.rows[0].companion_id !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
+
+    for (let i = 0; i < imageIds.length; i++) {
+      await pool.query('UPDATE pet_gallery SET "order" = $1 WHERE id = $2 AND pet_id = $3', [i, imageIds[i], req.params.pet_id]);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error reordering gallery' });
   }
 });
 
