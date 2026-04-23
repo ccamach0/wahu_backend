@@ -121,8 +121,8 @@ router.post('/', authenticate, uploadSingle, processImage, async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al crear mascota' });
+    console.error('Error creating pet:', err.message);
+    res.status(500).json({ error: 'Error al crear mascota', details: err.message });
   }
 });
 
