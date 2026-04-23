@@ -242,7 +242,7 @@ router.delete('/:pet_id/gallery/:image_id', authenticate, async (req, res) => {
     await deleteFromCloudinary(image.rows[0].image_url);
     await pool.query('DELETE FROM pet_gallery WHERE id = $1', [req.params.image_id]);
 
-    res.status(204).send();
+    res.json({ success: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error deleting image' });
