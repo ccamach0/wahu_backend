@@ -7,15 +7,64 @@ import { uploadToCloudinary, deleteFromCloudinary } from '../services/cloudinary
 
 const router = Router();
 
-// Obtener perfil de usuario
-router.get('/:companion_id', optionalAuth, async (req, res) => {
+// Listar compañeros
+router.get('/', optionalAuth, async (req, res) => {
+  const { search = '', limit = 12, page = 1 } = req.query;
+  const offset = (page - 1) * limit;
+
   try {
-    const result = await pool.query(
-      `SELECT id, name, username, avatar_url, created_at FROM companions WHERE id = $1`,
-      [req.params.companion_id]
-    );
-    if (!result.rows.length) return res.status(404).json({ error: 'User not found' });
-    res.json(result.rows[0]);
+    const conditions = search ? `WHERE username ILIKE $1 OR name ILIKE $1` : '';
+    const params = search ? [`%${search}%`] : [];
+
+    const [companions, total] = await Promise.all([
+      pool.query(
+        `SELECT c.id, c.name, c.username, c.avatar_url, COUNT(DISTINCT p.id) as pet_count
+         FROM companions c
+         LEFT JOIN pets p ON c.id = p.companion_id
+         ${conditions}
+         GROUP BY c.id
+         ORDER BY c.name
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, parseInt(limit), parseInt(offset)]
+      ),
+      pool.query(
+        `SELECT COUNT(*) FROM companions ${conditions}`,
+        params
+      ),
+    ]);
+
+    res.json({
+      companions: companions.rows,
+      total: parseInt(total.rows[0].count),
+      page: parseInt(page),
+      pages: Math.ceil(total.rows[0].count / limit),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error fetching companions' });
+  }
+});
+
+// Obtener perfil de usuario por username
+router.get('/:username', optionalAuth, async (req, res) => {
+  try {
+    const [companion, pets] = await Promise.all([
+      pool.query(
+        `SELECT id, name, username, avatar_url, created_at FROM companions WHERE username = $1`,
+        [req.params.username]
+      ),
+      pool.query(
+        `SELECT id, name, username, avatar_url, species, breed, level FROM pets WHERE companion_id = (SELECT id FROM companions WHERE username = $1) ORDER BY name`,
+        [req.params.username]
+      ),
+    ]);
+
+    if (!companion.rows.length) return res.status(404).json({ error: 'User not found' });
+
+    res.json({
+      ...companion.rows[0],
+      pets: pets.rows,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error fetching user profile' });
