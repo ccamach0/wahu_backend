@@ -158,6 +158,29 @@ router.delete('/:id', authenticate, async (req, res) => {
   }
 });
 
+// Cambiar avatar de mascota
+router.put('/:id/avatar', authenticate, uploadSingle, processImage, async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  try {
+    const pet = await pool.query('SELECT companion_id FROM pets WHERE id = $1', [req.params.id]);
+    if (!pet.rows.length) return res.status(404).json({ error: 'Pet not found' });
+    if (pet.rows[0].companion_id !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
+
+    const avatar_url = await uploadToCloudinary(req.file.buffer, req.file.originalname, 'pets/avatars');
+
+    const result = await pool.query(
+      'UPDATE pets SET avatar_url = $1 WHERE id = $2 RETURNING id, avatar_url',
+      [avatar_url, req.params.id]
+    );
+
+    res.json({ id: result.rows[0].id, avatar_url: result.rows[0].avatar_url });
+  } catch (err) {
+    console.error('Error updating pet avatar:', err.message);
+    res.status(500).json({ error: 'Error al cambiar avatar' });
+  }
+});
+
 // Galería de mascota - Subir foto
 router.post('/:pet_id/gallery', authenticate, uploadSingle, processImage, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
