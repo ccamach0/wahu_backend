@@ -13,12 +13,16 @@ export async function uploadToR2(buffer, filename, folder = 'images') {
   console.log(`[R2] Buffer size: ${buffer.length} bytes`);
 
   try {
+    const now = new Date();
+    const amzDate = now.toISOString().replace(/[:-]/g, '').replace(/\.\d{3}/, '') + 'Z';
+
     const response = await fetch(url, {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'image/jpeg',
         'x-amz-content-sha256': 'UNSIGNED-PAYLOAD',
+        'x-amz-date': amzDate,
       },
       body: buffer,
     });
