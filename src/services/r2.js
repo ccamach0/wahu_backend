@@ -8,6 +8,10 @@ export async function uploadToR2(buffer, filename, folder = 'images') {
   const key = `${folder}/${Date.now()}-${filename}`;
   const url = `${endpoint}/${bucketName}/${key}`;
 
+  console.log(`[R2] Uploading to: ${url}`);
+  console.log(`[R2] Token present: ${token ? 'yes' : 'no'}`);
+  console.log(`[R2] Buffer size: ${buffer.length} bytes`);
+
   try {
     const response = await fetch(url, {
       method: 'PUT',
@@ -18,13 +22,17 @@ export async function uploadToR2(buffer, filename, folder = 'images') {
       body: buffer,
     });
 
+    console.log(`[R2] Response status: ${response.status} ${response.statusText}`);
+
     if (!response.ok) {
-      throw new Error(`R2 upload failed: ${response.statusText}`);
+      const text = await response.text();
+      console.log(`[R2] Error response: ${text}`);
+      throw new Error(`R2 upload failed: ${response.statusText} - ${text}`);
     }
 
     return `${publicUrl}/${key}`;
   } catch (error) {
-    console.error('Error uploading to R2:', error);
+    console.error('Error uploading to R2:', error.message);
     throw error;
   }
 }
