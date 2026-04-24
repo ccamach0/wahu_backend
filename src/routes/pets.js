@@ -76,12 +76,17 @@ router.get('/popular', async (req, res) => {
 // Ver mascota por username
 router.get('/:username', optionalAuth, async (req, res) => {
   try {
-    const username = req.params.username;
-    console.log(`[DEBUG] Buscando mascota con username: "${username}"`);
+    const username = (req.params.username || '').trim();
+    console.log(`[DEBUG] GET /:username - Buscando mascota con username: "${username}"`);
 
+    if (!username) {
+      return res.status(400).json({ error: 'Username requerido' });
+    }
+
+    // Primera intenta: búsqueda exacta y case-insensitive
     const result = await pool.query(
       `SELECT p.*, comp.name as companion_name, comp.username as companion_username,
-              comp.avatar_url as companion_avatar,
+              comp.avatar_url as companion_avatar, comp.id as companion_id,
               array_agg(DISTINCT jsonb_build_object('id', c.id, 'name', c.name, 'category', c.category))
                 FILTER (WHERE c.id IS NOT NULL) as cards,
               array_agg(DISTINCT pt.tag_name) FILTER (WHERE pt.tag_name IS NOT NULL) as tags,
@@ -92,22 +97,25 @@ router.get('/:username', optionalAuth, async (req, res) => {
        LEFT JOIN cards c ON pc.card_id = c.id
        LEFT JOIN pet_tags pt ON p.id = pt.pet_id
        LEFT JOIN friendships f ON p.id = f.pet_id
-       WHERE p.username = $1
+       WHERE LOWER(p.username) = LOWER($1)
        GROUP BY p.id, comp.id`,
       [username]
     );
 
-    console.log(`[DEBUG] Resultado de búsqueda: ${result.rows.length} filas encontradas`);
+    console.log(`[DEBUG] Resultado: ${result.rows.length} mascota(s) encontrada(s)`);
 
     if (!result.rows.length) {
-      console.log(`[DEBUG] Mascota con username "${username}" no encontrada`);
-      return res.status(404).json({ error: 'Mascota no encontrada', username });
+      console.log(`[DEBUG] No se encontró mascota con username: "${username}"`);
+      return res.status(404).json({ error: 'Mascota no encontrada' });
     }
 
-    res.json(result.rows[0]);
+    const pet = result.rows[0];
+    console.log(`[DEBUG] Mascota encontrada: ${pet.name} (${pet.username}) - Companion: ${pet.companion_name}`);
+
+    res.json(pet);
   } catch (err) {
-    console.error('[ERROR] Error al obtener mascota:', err);
-    res.status(500).json({ error: 'Error al obtener mascota', details: err.message });
+    console.error('[ERROR] Error en GET /:username:', err);
+    res.status(500).json({ error: 'Error al obtener mascota', message: err.message });
   }
 });
 
