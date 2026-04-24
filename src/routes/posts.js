@@ -153,11 +153,23 @@ router.post('/pets/:pet_id/posts/:post_id/comments', authenticate, async (req, r
   }
 
   try {
-    const myPets = await pool.query(
-      'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+    // Get companion's active pet, fallback to first pet
+    const companion = await pool.query(
+      'SELECT active_pet_id FROM companions WHERE id = $1',
       [req.user.id]
     );
-    if (!myPets.rows.length) {
+
+    let activePetId = companion.rows[0]?.active_pet_id;
+
+    if (!activePetId) {
+      const firstPet = await pool.query(
+        'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+        [req.user.id]
+      );
+      activePetId = firstPet.rows[0]?.id;
+    }
+
+    if (!activePetId) {
       return res.status(400).json({ error: 'You must have an active pet to comment' });
     }
 
@@ -169,7 +181,7 @@ router.post('/pets/:pet_id/posts/:post_id/comments', authenticate, async (req, r
       `INSERT INTO pet_post_comments (id, post_id, author_pet_id, content, sent_as_owner)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, content, author_pet_id, sent_as_owner, created_at`,
-      [id, req.params.post_id, myPets.rows[0].id, content, sent_as_owner === true]
+      [id, req.params.post_id, activePetId, content, sent_as_owner === true]
     );
 
     const comment = result.rows[0];
@@ -262,11 +274,23 @@ router.post('/pets/:pet_id/gallery/:image_id/comments', authenticate, async (req
   }
 
   try {
-    const myPets = await pool.query(
-      'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+    // Get companion's active pet, fallback to first pet
+    const companion = await pool.query(
+      'SELECT active_pet_id FROM companions WHERE id = $1',
       [req.user.id]
     );
-    if (!myPets.rows.length) {
+
+    let activePetId = companion.rows[0]?.active_pet_id;
+
+    if (!activePetId) {
+      const firstPet = await pool.query(
+        'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+        [req.user.id]
+      );
+      activePetId = firstPet.rows[0]?.id;
+    }
+
+    if (!activePetId) {
       return res.status(400).json({ error: 'You must have an active pet to comment' });
     }
 
@@ -278,7 +302,7 @@ router.post('/pets/:pet_id/gallery/:image_id/comments', authenticate, async (req
       `INSERT INTO pet_gallery_comments (id, gallery_image_id, author_pet_id, content, sent_as_owner)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, content, author_pet_id, sent_as_owner, created_at`,
-      [id, req.params.image_id, myPets.rows[0].id, content, sent_as_owner === true]
+      [id, req.params.image_id, activePetId, content, sent_as_owner === true]
     );
 
     const comment = result.rows[0];
@@ -380,11 +404,23 @@ router.post('/companions/:companion_id/posts', authenticate, async (req, res) =>
     );
     if (!companion.rows.length) return res.status(404).json({ error: 'Companion not found' });
 
-    const myPets = await pool.query(
-      'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+    // Get companion's active pet, fallback to first pet
+    const companionPet = await pool.query(
+      'SELECT active_pet_id FROM companions WHERE id = $1',
       [req.user.id]
     );
-    if (!myPets.rows.length) {
+
+    let activePetId = companionPet.rows[0]?.active_pet_id;
+
+    if (!activePetId) {
+      const firstPet = await pool.query(
+        'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+        [req.user.id]
+      );
+      activePetId = firstPet.rows[0]?.id;
+    }
+
+    if (!activePetId) {
       return res.status(400).json({ error: 'You must have an active pet to post' });
     }
 
@@ -393,7 +429,7 @@ router.post('/companions/:companion_id/posts', authenticate, async (req, res) =>
       `INSERT INTO companion_posts (id, companion_id, pet_id, content, sent_as_owner)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, content, sent_as_owner, created_at, pet_id, companion_id`,
-      [id, req.params.companion_id, myPets.rows[0].id, content, sent_as_owner === true]
+      [id, req.params.companion_id, activePetId, content, sent_as_owner === true]
     );
 
     const post = result.rows[0];
@@ -486,11 +522,23 @@ router.post('/companions/:companion_id/posts/:post_id/comments', authenticate, a
   }
 
   try {
-    const myPets = await pool.query(
-      'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+    // Get companion's active pet, fallback to first pet
+    const companion = await pool.query(
+      'SELECT active_pet_id FROM companions WHERE id = $1',
       [req.user.id]
     );
-    if (!myPets.rows.length) {
+
+    let activePetId = companion.rows[0]?.active_pet_id;
+
+    if (!activePetId) {
+      const firstPet = await pool.query(
+        'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+        [req.user.id]
+      );
+      activePetId = firstPet.rows[0]?.id;
+    }
+
+    if (!activePetId) {
       return res.status(400).json({ error: 'You must have an active pet to comment' });
     }
 
@@ -502,7 +550,7 @@ router.post('/companions/:companion_id/posts/:post_id/comments', authenticate, a
       `INSERT INTO companion_post_comments (id, post_id, author_pet_id, content, sent_as_owner)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, content, author_pet_id, sent_as_owner, created_at`,
-      [id, req.params.post_id, myPets.rows[0].id, content, sent_as_owner === true]
+      [id, req.params.post_id, activePetId, content, sent_as_owner === true]
     );
 
     const comment = result.rows[0];
@@ -595,11 +643,23 @@ router.post('/companions/:companion_id/gallery/:image_id/comments', authenticate
   }
 
   try {
-    const myPets = await pool.query(
-      'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+    // Get companion's active pet, fallback to first pet
+    const companion = await pool.query(
+      'SELECT active_pet_id FROM companions WHERE id = $1',
       [req.user.id]
     );
-    if (!myPets.rows.length) {
+
+    let activePetId = companion.rows[0]?.active_pet_id;
+
+    if (!activePetId) {
+      const firstPet = await pool.query(
+        'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+        [req.user.id]
+      );
+      activePetId = firstPet.rows[0]?.id;
+    }
+
+    if (!activePetId) {
       return res.status(400).json({ error: 'You must have an active pet to comment' });
     }
 
@@ -611,7 +671,7 @@ router.post('/companions/:companion_id/gallery/:image_id/comments', authenticate
       `INSERT INTO companion_gallery_comments (id, gallery_image_id, author_pet_id, content, sent_as_owner)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, content, author_pet_id, sent_as_owner, created_at`,
-      [id, req.params.image_id, myPets.rows[0].id, content, sent_as_owner === true]
+      [id, req.params.image_id, activePetId, content, sent_as_owner === true]
     );
 
     const comment = result.rows[0];
