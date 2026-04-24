@@ -81,11 +81,13 @@ router.get('/:username', optionalAuth, async (req, res) => {
               comp.avatar_url as companion_avatar,
               array_agg(DISTINCT jsonb_build_object('id', c.id, 'name', c.name, 'category', c.category))
                 FILTER (WHERE c.id IS NOT NULL) as cards,
+              array_agg(DISTINCT pt.tag_name) FILTER (WHERE pt.tag_name IS NOT NULL) as tags,
               COUNT(DISTINCT f.id) FILTER (WHERE f.status='accepted') as friend_count
        FROM pets p
        JOIN companions comp ON p.companion_id = comp.id
        LEFT JOIN pet_cards pc ON p.id = pc.pet_id
        LEFT JOIN cards c ON pc.card_id = c.id
+       LEFT JOIN pet_tags pt ON p.id = pt.pet_id
        LEFT JOIN friendships f ON p.id = f.pet_id
        WHERE p.username = $1
        GROUP BY p.id, comp.id`,
@@ -267,6 +269,61 @@ router.put('/:pet_id/gallery/reorder', authenticate, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error reordering gallery' });
+  }
+});
+
+// Agregar etiqueta a mascota
+router.post('/:pet_id/tags', authenticate, async (req, res) => {
+  const { tag_name } = req.body;
+  if (!tag_name || typeof tag_name !== 'string') {
+    return res.status(400).json({ error: 'tag_name is required and must be a string' });
+  }
+
+  try {
+    // Verificar que el usuario es propietario de la mascota
+    const pet = await pool.query('SELECT companion_id FROM pets WHERE id = $1', [req.params.pet_id]);
+    if (!pet.rows.length) return res.status(404).json({ error: 'Pet not found' });
+    if (pet.rows[0].companion_id !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
+
+    // Insertar la etiqueta
+    const sanitizedTag = tag_name.trim().toLowerCase().replace(/^#+/, '');
+    const result = await pool.query(
+      'INSERT INTO pet_tags (pet_id, tag_name) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *',
+      [req.params.pet_id, sanitizedTag]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(409).json({ error: 'Tag already exists' });
+    }
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error adding tag' });
+  }
+});
+
+// Eliminar etiqueta de mascota
+router.delete('/:pet_id/tags/:tag_name', authenticate, async (req, res) => {
+  const { tag_name } = req.params;
+
+  try {
+    // Verificar que el usuario es propietario de la mascota
+    const pet = await pool.query('SELECT companion_id FROM pets WHERE id = $1', [req.params.pet_id]);
+    if (!pet.rows.length) return res.status(404).json({ error: 'Pet not found' });
+    if (pet.rows[0].companion_id !== req.user.id) return res.status(403).json({ error: 'Unauthorized' });
+
+    // Eliminar la etiqueta
+    const sanitizedTag = decodeURIComponent(tag_name).toLowerCase().replace(/^#+/, '');
+    await pool.query(
+      'DELETE FROM pet_tags WHERE pet_id = $1 AND tag_name = $2',
+      [req.params.pet_id, sanitizedTag]
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error removing tag' });
   }
 });
 
