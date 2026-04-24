@@ -14,6 +14,7 @@ import notificationsRoutes from './routes/notifications.js';
 import companionsRoutes from './routes/companions.js';
 import chatRoutes from './routes/chat.js';
 import appointmentsRoutes from './routes/appointments.js';
+import postsRoutes from './routes/posts.js';
 
 dotenv.config();
 
@@ -38,6 +39,7 @@ app.use('/api/notifications', notificationsRoutes);
 app.use('/api/companions', companionsRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/appointments', appointmentsRoutes);
+app.use('/api/posts', postsRoutes);
 
 app.get('/api/health', (_, res) => res.json({ status: 'ok', app: 'Wahu API' }));
 
@@ -142,6 +144,77 @@ const runMigrations = async () => {
       "order" INT DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_companion_gallery_companion_id ON companion_gallery(companion_id);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pet_posts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      sent_as_owner BOOLEAN DEFAULT FALSE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_pet_posts_pet_id ON pet_posts(pet_id);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pet_post_comments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      post_id UUID NOT NULL REFERENCES pet_posts(id) ON DELETE CASCADE,
+      author_pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      sent_as_owner BOOLEAN DEFAULT FALSE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_pet_post_comments_post_id ON pet_post_comments(post_id);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pet_gallery_comments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      gallery_image_id UUID NOT NULL REFERENCES pet_gallery(id) ON DELETE CASCADE,
+      author_pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      sent_as_owner BOOLEAN DEFAULT FALSE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_pet_gallery_comments_gallery_id ON pet_gallery_comments(gallery_image_id);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS companion_posts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      companion_id UUID NOT NULL REFERENCES companions(id) ON DELETE CASCADE,
+      pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      sent_as_owner BOOLEAN DEFAULT FALSE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_companion_posts_companion_id ON companion_posts(companion_id);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS companion_post_comments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      post_id UUID NOT NULL REFERENCES companion_posts(id) ON DELETE CASCADE,
+      author_pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      sent_as_owner BOOLEAN DEFAULT FALSE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_companion_post_comments_post_id ON companion_post_comments(post_id);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS companion_gallery_comments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      gallery_image_id UUID NOT NULL REFERENCES companion_gallery(id) ON DELETE CASCADE,
+      author_pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      sent_as_owner BOOLEAN DEFAULT FALSE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_companion_gallery_comments_gallery_id ON companion_gallery_comments(gallery_image_id);
   `);
 };
 
