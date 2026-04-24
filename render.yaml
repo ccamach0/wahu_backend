@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: wahu-backend
+    runtime: node
+    startCommand: npm run dev
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: DATABASE_URL
+        syncWith: DATABASE_URL_NEON
+      - key: JWT_SECRET
+        value: wahu_super_secret_key_2024
+      - key: GOOGLE_CLIENT_ID
+        value: 224025465676-hfud6mpmpf1qqf1a77tocpbc4vh7q760.apps.googleusercontent.com
+      - key: APP_URL
+        value: https://wahu-2ih.pages.dev
+      - key: CLOUDINARY_CLOUD_NAME
+        value: doyq8zigo
+      - key: CLOUDINARY_API_KEY
+        value: 711468669987914
+      - key: CLOUDINARY_API_SECRET
+        value: 2d8t3aWKNSWhHdcWk1f3e-OPTNs
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USER
+        value: christopher.gcamachov@gmail.com
+      - key: SMTP_PASS
+        value: jpipbnefxgfymutu
