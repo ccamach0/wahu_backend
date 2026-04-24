@@ -40,7 +40,28 @@ router.get('/:id', optionalAuth, async (req, res) => {
        WHERE cm.clan_id=$1 ORDER BY cm.joined_at`,
       [req.params.id]
     );
-    res.json({ ...clan.rows[0], members: members.rows });
+
+    let userPendingRequest = null;
+    // Check if authenticated user has pending request
+    if (req.user) {
+      const activePet = await getActivePet(pool, req.user.id);
+      if (activePet) {
+        const requestCheck = await pool.query(
+          `SELECT id, status FROM clan_join_requests
+           WHERE clan_id=$1 AND pet_id=$2 AND status='pending'`,
+          [req.params.id, activePet]
+        );
+        if (requestCheck.rows.length > 0) {
+          userPendingRequest = requestCheck.rows[0].id;
+        }
+      }
+    }
+
+    res.json({
+      ...clan.rows[0],
+      members: members.rows,
+      userPendingRequest
+    });
   } catch (err) {
     res.status(500).json({ error: 'Error al obtener clan' });
   }
