@@ -69,6 +69,7 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 // Unirse a clan
+// Solicitar acceso al clan (en lugar de unirse directamente)
 router.post('/:id/join', authenticate, async (req, res) => {
   const { pet_id } = req.body;
   try {
@@ -95,14 +96,26 @@ router.post('/:id/join', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Ya eres miembro del clan' });
     }
 
-    await pool.query(
-      'INSERT INTO clan_members (clan_id, pet_id, role) VALUES ($1,$2,$3)',
-      [req.params.id, pet_id, 'member']
+    // Check if request already exists
+    const requestResult = await pool.query(
+      'SELECT id, status FROM clan_join_requests WHERE clan_id = $1 AND pet_id = $2',
+      [req.params.id, pet_id]
     );
-    res.json({ success: true });
+    if (requestResult.rows.length > 0) {
+      if (requestResult.rows[0].status === 'pending') {
+        return res.status(400).json({ error: 'Ya tienes una solicitud pendiente' });
+      }
+    }
+
+    // Create join request
+    await pool.query(
+      'INSERT INTO clan_join_requests (clan_id, pet_id, status) VALUES ($1, $2, $3)',
+      [req.params.id, pet_id, 'pending']
+    );
+    res.json({ success: true, message: 'Solicitud de acceso enviada' });
   } catch (err) {
-    console.error('Error al unirse al clan:', err);
-    res.status(500).json({ error: 'Error al unirse al clan' });
+    console.error('Error al solicitar acceso al clan:', err);
+    res.status(500).json({ error: 'Error al solicitar acceso' });
   }
 });
 
@@ -231,16 +244,10 @@ router.post('/:clan_id/leave', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'No eres miembro del clan' });
     }
 
-    // Check if last admin
+    // Check if admin (fundador) - can't leave, must delete clan instead
     const { role: userRole } = await checkClanMemberRole(pool, clan_id, activePet);
     if (userRole === 'admin') {
-      const adminCount = await pool.query(
-        'SELECT COUNT(*) as count FROM clan_members WHERE clan_id = $1 AND role = $2',
-        [clan_id, 'admin']
-      );
-      if (adminCount.rows[0].count === 1) {
-        return res.status(400).json({ error: 'No puedes salir siendo el último administrador' });
-      }
+      return res.status(400).json({ error: 'Como fundador, no puedes salir del clan. Puedes eliminarlo en su lugar.' });
     }
 
     // Leave clan
@@ -895,6 +902,127 @@ router.get('/:clan_id/messages', authenticate, async (req, res) => {
   } catch (err) {
     console.error('Error al obtener mensajes:', err);
     res.status(500).json({ error: 'Error al obtener mensajes' });
+  }
+});
+
+// Listar solicitudes de acceso pendientes (moderator+)
+router.get('/:clan_id/requests', authenticate, async (req, res) => {
+  const { clan_id } = req.params;
+  try {
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) return res.status(400).json({ error: 'No tienes mascotas' });
+
+    const { isMember, role } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) return res.status(403).json({ error: 'No eres miembro del clan' });
+    if (role !== 'admin' && role !== 'moderator') {
+      return res.status(403).json({ error: 'Solo moderadores y administradores pueden ver solicitudes' });
+    }
+
+    const result = await pool.query(
+      `SELECT cjr.id, cjr.pet_id, cjr.status, cjr.requested_at,
+              p.name, p.username, p.avatar_url
+       FROM clan_join_requests cjr
+       JOIN pets p ON cjr.pet_id = p.id
+       WHERE cjr.clan_id = $1 AND cjr.status = 'pending'
+       ORDER BY cjr.requested_at ASC`,
+      [clan_id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener solicitudes:', err);
+    res.status(500).json({ error: 'Error al obtener solicitudes' });
+  }
+});
+
+// Aceptar solicitud de acceso
+router.post('/:clan_id/requests/:request_id/approve', authenticate, async (req, res) => {
+  const { clan_id, request_id } = req.params;
+  try {
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) return res.status(400).json({ error: 'No tienes mascotas' });
+
+    const { isMember, role } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) return res.status(403).json({ error: 'No eres miembro del clan' });
+    if (role !== 'admin' && role !== 'moderator') {
+      return res.status(403).json({ error: 'Solo moderadores y administradores pueden aprobar solicitudes' });
+    }
+
+    // Get request
+    const requestResult = await pool.query(
+      'SELECT pet_id FROM clan_join_requests WHERE id = $1 AND clan_id = $2 AND status = $3',
+      [request_id, clan_id, 'pending']
+    );
+    if (!requestResult.rows.length) {
+      return res.status(404).json({ error: 'Solicitud no encontrada' });
+    }
+
+    const petId = requestResult.rows[0].pet_id;
+
+    // Add to clan
+    await pool.query(
+      'INSERT INTO clan_members (clan_id, pet_id, role) VALUES ($1, $2, $3)',
+      [clan_id, petId, 'member']
+    );
+
+    // Mark request as approved
+    await pool.query(
+      'UPDATE clan_join_requests SET status = $1 WHERE id = $2',
+      ['approved', request_id]
+    );
+
+    res.json({ success: true, message: 'Solicitud aceptada' });
+  } catch (err) {
+    console.error('Error al aceptar solicitud:', err);
+    res.status(500).json({ error: 'Error al aceptar solicitud' });
+  }
+});
+
+// Rechazar solicitud de acceso
+router.post('/:clan_id/requests/:request_id/reject', authenticate, async (req, res) => {
+  const { clan_id, request_id } = req.params;
+  try {
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) return res.status(400).json({ error: 'No tienes mascotas' });
+
+    const { isMember, role } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) return res.status(403).json({ error: 'No eres miembro del clan' });
+    if (role !== 'admin' && role !== 'moderator') {
+      return res.status(403).json({ error: 'Solo moderadores y administradores pueden rechazar solicitudes' });
+    }
+
+    // Mark request as rejected
+    await pool.query(
+      'UPDATE clan_join_requests SET status = $1 WHERE id = $2 AND clan_id = $3',
+      ['rejected', request_id, clan_id]
+    );
+
+    res.json({ success: true, message: 'Solicitud rechazada' });
+  } catch (err) {
+    console.error('Error al rechazar solicitud:', err);
+    res.status(500).json({ error: 'Error al rechazar solicitud' });
+  }
+});
+
+// Eliminar clan (solo admin/fundador)
+router.delete('/:clan_id', authenticate, async (req, res) => {
+  const { clan_id } = req.params;
+  try {
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) return res.status(400).json({ error: 'No tienes mascotas' });
+
+    const { isMember, role } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) return res.status(403).json({ error: 'No eres miembro del clan' });
+    if (role !== 'admin') {
+      return res.status(403).json({ error: 'Solo el fundador puede eliminar el clan' });
+    }
+
+    // Delete clan (cascade will handle members, posts, etc.)
+    await pool.query('DELETE FROM clans WHERE id = $1', [clan_id]);
+
+    res.json({ success: true, message: 'Clan eliminado' });
+  } catch (err) {
+    console.error('Error al eliminar clan:', err);
+    res.status(500).json({ error: 'Error al eliminar clan' });
   }
 });
 
