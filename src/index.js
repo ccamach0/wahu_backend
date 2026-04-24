@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 
 import pool from './config/db.js';
+import versionInfo from './utils/version.js';
 import authRoutes from './routes/auth.js';
 import petsRoutes from './routes/pets.js';
 import cardsRoutes from './routes/cards.js';
@@ -41,7 +42,11 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/appointments', appointmentsRoutes);
 app.use('/api/posts', postsRoutes);
 
-app.get('/api/health', (_, res) => res.json({ status: 'ok', app: 'Wahu API' }));
+app.get('/api/health', (_, res) => res.json({
+  status: 'ok',
+  app: 'Wahu API',
+  ...versionInfo
+}));
 
 app.get('/api/stats', async (req, res) => {
   try {
