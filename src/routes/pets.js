@@ -76,6 +76,9 @@ router.get('/popular', async (req, res) => {
 // Ver mascota por username
 router.get('/:username', optionalAuth, async (req, res) => {
   try {
+    const username = req.params.username;
+    console.log(`[DEBUG] Buscando mascota con username: "${username}"`);
+
     const result = await pool.query(
       `SELECT p.*, comp.name as companion_name, comp.username as companion_username,
               comp.avatar_url as companion_avatar,
@@ -84,20 +87,27 @@ router.get('/:username', optionalAuth, async (req, res) => {
               array_agg(DISTINCT pt.tag_name) FILTER (WHERE pt.tag_name IS NOT NULL) as tags,
               COUNT(DISTINCT f.id) FILTER (WHERE f.status='accepted') as friend_count
        FROM pets p
-       JOIN companions comp ON p.companion_id = comp.id
+       LEFT JOIN companions comp ON p.companion_id = comp.id
        LEFT JOIN pet_cards pc ON p.id = pc.pet_id
        LEFT JOIN cards c ON pc.card_id = c.id
        LEFT JOIN pet_tags pt ON p.id = pt.pet_id
        LEFT JOIN friendships f ON p.id = f.pet_id
        WHERE p.username = $1
        GROUP BY p.id, comp.id`,
-      [req.params.username]
+      [username]
     );
-    if (!result.rows.length) return res.status(404).json({ error: 'Mascota no encontrada' });
+
+    console.log(`[DEBUG] Resultado de búsqueda: ${result.rows.length} filas encontradas`);
+
+    if (!result.rows.length) {
+      console.log(`[DEBUG] Mascota con username "${username}" no encontrada`);
+      return res.status(404).json({ error: 'Mascota no encontrada', username });
+    }
+
     res.json(result.rows[0]);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error al obtener mascota' });
+    console.error('[ERROR] Error al obtener mascota:', err);
+    res.status(500).json({ error: 'Error al obtener mascota', details: err.message });
   }
 });
 
