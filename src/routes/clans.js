@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import pool from '../config/db.js';
 import { authenticate, optionalAuth } from '../middleware/auth.js';
+import { uploadSingle, processImage } from '../middleware/imageUpload.js';
+import { uploadToCloudinary } from '../services/cloudinary.js';
+import { checkClanMemberRole, isClanAtMaxMembers, getActivePet, canDeleteClanContent, getAuthorInfo } from '../services/clanService.js';
 
 const router = Router();
 
@@ -69,12 +72,36 @@ router.post('/', authenticate, async (req, res) => {
 router.post('/:id/join', authenticate, async (req, res) => {
   const { pet_id } = req.body;
   try {
-    await pool.query(
-      'INSERT INTO clan_members (clan_id, pet_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+    // Check if clan exists
+    const clanResult = await pool.query(
+      'SELECT id, member_count FROM clans WHERE id = $1',
+      [req.params.id]
+    );
+    if (!clanResult.rows.length) {
+      return res.status(404).json({ error: 'Clan no encontrado' });
+    }
+
+    // Check if at max members
+    if (clanResult.rows[0].member_count >= 100) {
+      return res.status(400).json({ error: 'El clan ha alcanzado el máximo de 100 miembros' });
+    }
+
+    // Check if already a member
+    const memberResult = await pool.query(
+      'SELECT id FROM clan_members WHERE clan_id = $1 AND pet_id = $2',
       [req.params.id, pet_id]
+    );
+    if (memberResult.rows.length > 0) {
+      return res.status(400).json({ error: 'Ya eres miembro del clan' });
+    }
+
+    await pool.query(
+      'INSERT INTO clan_members (clan_id, pet_id, role) VALUES ($1,$2,$3)',
+      [req.params.id, pet_id, 'member']
     );
     res.json({ success: true });
   } catch (err) {
+    console.error('Error al unirse al clan:', err);
     res.status(500).json({ error: 'Error al unirse al clan' });
   }
 });
@@ -90,6 +117,784 @@ router.get('/my/:pet_id', authenticate, async (req, res) => {
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: 'Error al obtener mis clanes' });
+  }
+});
+
+// Cambiar rol de miembro (admin only)
+router.put('/:clan_id/members/:pet_id/role', authenticate, async (req, res) => {
+  const { role } = req.body;
+  const { clan_id, pet_id } = req.params;
+
+  // Validate role
+  if (!['admin', 'moderator', 'member'].includes(role)) {
+    return res.status(400).json({ error: 'Rol inválido' });
+  }
+
+  try {
+    // Get active pet of current user
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if current user is admin of the clan
+    const { isMember, role: userRole } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember || userRole !== 'admin') {
+      return res.status(403).json({ error: 'No tienes permisos para cambiar roles' });
+    }
+
+    // Can't demote the only admin
+    if (role !== 'admin') {
+      const adminCount = await pool.query(
+        'SELECT COUNT(*) as count FROM clan_members WHERE clan_id = $1 AND role = $2',
+        [clan_id, 'admin']
+      );
+      if (adminCount.rows[0].count === 1) {
+        const targetMember = await pool.query(
+          'SELECT role FROM clan_members WHERE clan_id = $1 AND pet_id = $2',
+          [clan_id, pet_id]
+        );
+        if (targetMember.rows[0]?.role === 'admin') {
+          return res.status(400).json({ error: 'No puedes dejar el clan sin administrador' });
+        }
+      }
+    }
+
+    // Update role
+    await pool.query(
+      'UPDATE clan_members SET role = $1 WHERE clan_id = $2 AND pet_id = $3',
+      [role, clan_id, pet_id]
+    );
+
+    res.json({ success: true, message: `Rol actualizado a ${role}` });
+  } catch (err) {
+    console.error('Error al cambiar rol:', err);
+    res.status(500).json({ error: 'Error al cambiar rol' });
+  }
+});
+
+// Eliminar miembro del clan (admin only)
+router.delete('/:clan_id/members/:pet_id', authenticate, async (req, res) => {
+  const { clan_id, pet_id } = req.params;
+
+  try {
+    // Get active pet of current user
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if current user is admin of the clan
+    const { isMember, role: userRole } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember || userRole !== 'admin') {
+      return res.status(403).json({ error: 'No tienes permisos para eliminar miembros' });
+    }
+
+    // Can't remove the last admin
+    if (pet_id === activePet) {
+      const adminCount = await pool.query(
+        'SELECT COUNT(*) as count FROM clan_members WHERE clan_id = $1 AND role = $2',
+        [clan_id, 'admin']
+      );
+      if (adminCount.rows[0].count === 1) {
+        return res.status(400).json({ error: 'El clan debe tener al menos un administrador' });
+      }
+    }
+
+    // Remove member
+    await pool.query(
+      'DELETE FROM clan_members WHERE clan_id = $1 AND pet_id = $2',
+      [clan_id, pet_id]
+    );
+
+    res.json({ success: true, message: 'Miembro eliminado del clan' });
+  } catch (err) {
+    console.error('Error al eliminar miembro:', err);
+    res.status(500).json({ error: 'Error al eliminar miembro' });
+  }
+});
+
+// Salir del clan
+router.post('/:clan_id/leave', authenticate, async (req, res) => {
+  const { clan_id } = req.params;
+
+  try {
+    // Get active pet of current user
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(400).json({ error: 'No eres miembro del clan' });
+    }
+
+    // Check if last admin
+    const { role: userRole } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (userRole === 'admin') {
+      const adminCount = await pool.query(
+        'SELECT COUNT(*) as count FROM clan_members WHERE clan_id = $1 AND role = $2',
+        [clan_id, 'admin']
+      );
+      if (adminCount.rows[0].count === 1) {
+        return res.status(400).json({ error: 'No puedes salir siendo el último administrador' });
+      }
+    }
+
+    // Leave clan
+    await pool.query(
+      'DELETE FROM clan_members WHERE clan_id = $1 AND pet_id = $2',
+      [clan_id, activePet]
+    );
+
+    res.json({ success: true, message: 'Has salido del clan' });
+  } catch (err) {
+    console.error('Error al salir del clan:', err);
+    res.status(500).json({ error: 'Error al salir del clan' });
+  }
+});
+
+// ========== CLAN POSTS ==========
+
+// Crear publicación en clan
+router.post('/:clan_id/posts', authenticate, async (req, res) => {
+  const { content, sent_as_owner = false } = req.body;
+  const { clan_id } = req.params;
+
+  if (!content?.trim()) {
+    return res.status(400).json({ error: 'El contenido es requerido' });
+  }
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member of clan
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(403).json({ error: 'No eres miembro del clan' });
+    }
+
+    // Create post
+    const postId = uuidv4();
+    await pool.query(
+      `INSERT INTO clan_posts (id, clan_id, author_pet_id, content, sent_as_owner)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [postId, clan_id, activePet, content, sent_as_owner === true]
+    );
+
+    // Get post with author info
+    const authorInfo = await getAuthorInfo(pool, activePet, sent_as_owner);
+    const postData = await pool.query(
+      'SELECT * FROM clan_posts WHERE id = $1',
+      [postId]
+    );
+
+    res.status(201).json({
+      ...postData.rows[0],
+      author_name: authorInfo?.author_name,
+      author_avatar: authorInfo?.author_avatar,
+      author_username: authorInfo?.author_username,
+      author_owner_name: authorInfo?.author_owner_name,
+      author_owner_username: authorInfo?.author_owner_username,
+    });
+  } catch (err) {
+    console.error('Error al crear publicación:', err);
+    res.status(500).json({ error: 'Error al crear publicación' });
+  }
+});
+
+// Listar publicaciones del clan
+router.get('/:clan_id/posts', authenticate, async (req, res) => {
+  const { clan_id } = req.params;
+  const { limit = 20, offset = 0 } = req.query;
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(403).json({ error: 'No eres miembro del clan' });
+    }
+
+    const posts = await pool.query(
+      `SELECT cp.*,
+        CASE WHEN cp.sent_as_owner THEN c.name ELSE p.name END AS author_name,
+        CASE WHEN cp.sent_as_owner THEN c.avatar_url ELSE p.avatar_url END AS author_avatar,
+        CASE WHEN cp.sent_as_owner THEN c.username ELSE p.username END AS author_username,
+        CASE WHEN cp.sent_as_owner THEN NULL ELSE c.name END AS author_owner_name,
+        CASE WHEN cp.sent_as_owner THEN NULL ELSE c.username END AS author_owner_username
+       FROM clan_posts cp
+       JOIN pets p ON cp.author_pet_id = p.id
+       JOIN companions c ON c.id = p.companion_id
+       WHERE cp.clan_id = $1
+       ORDER BY cp.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [clan_id, parseInt(limit), parseInt(offset)]
+    );
+
+    res.json(posts.rows);
+  } catch (err) {
+    console.error('Error al obtener publicaciones:', err);
+    res.status(500).json({ error: 'Error al obtener publicaciones' });
+  }
+});
+
+// Eliminar publicación del clan
+router.delete('/:clan_id/posts/:post_id', authenticate, async (req, res) => {
+  const { clan_id, post_id } = req.params;
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Get post
+    const postResult = await pool.query(
+      'SELECT author_pet_id FROM clan_posts WHERE id = $1 AND clan_id = $2',
+      [post_id, clan_id]
+    );
+
+    if (!postResult.rows.length) {
+      return res.status(404).json({ error: 'Publicación no encontrada' });
+    }
+
+    // Check permissions
+    const canDelete = await canDeleteClanContent(pool, clan_id, postResult.rows[0].author_pet_id, activePet);
+    if (!canDelete) {
+      return res.status(403).json({ error: 'No tienes permisos para eliminar esta publicación' });
+    }
+
+    await pool.query(
+      'DELETE FROM clan_posts WHERE id = $1',
+      [post_id]
+    );
+
+    res.json({ success: true, message: 'Publicación eliminada' });
+  } catch (err) {
+    console.error('Error al eliminar publicación:', err);
+    res.status(500).json({ error: 'Error al eliminar publicación' });
+  }
+});
+
+// ========== CLAN COMMENTS ==========
+
+// Crear comentario en publicación del clan
+router.post('/:clan_id/posts/:post_id/comments', authenticate, async (req, res) => {
+  const { content, sent_as_owner = false } = req.body;
+  const { clan_id, post_id } = req.params;
+
+  if (!content?.trim()) {
+    return res.status(400).json({ error: 'El comentario es requerido' });
+  }
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(403).json({ error: 'No eres miembro del clan' });
+    }
+
+    // Check if post exists
+    const postResult = await pool.query(
+      'SELECT id FROM clan_posts WHERE id = $1 AND clan_id = $2',
+      [post_id, clan_id]
+    );
+
+    if (!postResult.rows.length) {
+      return res.status(404).json({ error: 'Publicación no encontrada' });
+    }
+
+    // Create comment
+    const commentId = uuidv4();
+    await pool.query(
+      `INSERT INTO clan_post_comments (id, post_id, author_pet_id, content, sent_as_owner)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [commentId, post_id, activePet, content, sent_as_owner === true]
+    );
+
+    // Get comment with author info
+    const authorInfo = await getAuthorInfo(pool, activePet, sent_as_owner);
+    const commentData = await pool.query(
+      'SELECT * FROM clan_post_comments WHERE id = $1',
+      [commentId]
+    );
+
+    res.status(201).json({
+      ...commentData.rows[0],
+      author_name: authorInfo?.author_name,
+      author_avatar: authorInfo?.author_avatar,
+      author_username: authorInfo?.author_username,
+      author_owner_name: authorInfo?.author_owner_name,
+      author_owner_username: authorInfo?.author_owner_username,
+    });
+  } catch (err) {
+    console.error('Error al crear comentario:', err);
+    res.status(500).json({ error: 'Error al crear comentario' });
+  }
+});
+
+// Listar comentarios de publicación
+router.get('/:clan_id/posts/:post_id/comments', authenticate, async (req, res) => {
+  const { clan_id, post_id } = req.params;
+  const { limit = 50, offset = 0 } = req.query;
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(403).json({ error: 'No eres miembro del clan' });
+    }
+
+    const comments = await pool.query(
+      `SELECT cpc.*,
+        CASE WHEN cpc.sent_as_owner THEN c.name ELSE p.name END AS author_name,
+        CASE WHEN cpc.sent_as_owner THEN c.avatar_url ELSE p.avatar_url END AS author_avatar,
+        CASE WHEN cpc.sent_as_owner THEN c.username ELSE p.username END AS author_username,
+        CASE WHEN cpc.sent_as_owner THEN NULL ELSE c.name END AS author_owner_name,
+        CASE WHEN cpc.sent_as_owner THEN NULL ELSE c.username END AS author_owner_username
+       FROM clan_post_comments cpc
+       JOIN pets p ON cpc.author_pet_id = p.id
+       JOIN companions c ON c.id = p.companion_id
+       WHERE cpc.post_id = $1
+       ORDER BY cpc.created_at ASC
+       LIMIT $2 OFFSET $3`,
+      [post_id, parseInt(limit), parseInt(offset)]
+    );
+
+    res.json(comments.rows);
+  } catch (err) {
+    console.error('Error al obtener comentarios:', err);
+    res.status(500).json({ error: 'Error al obtener comentarios' });
+  }
+});
+
+// Eliminar comentario
+router.delete('/:clan_id/posts/:post_id/comments/:comment_id', authenticate, async (req, res) => {
+  const { clan_id, post_id, comment_id } = req.params;
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Get comment
+    const commentResult = await pool.query(
+      'SELECT author_pet_id FROM clan_post_comments WHERE id = $1 AND post_id = $2',
+      [comment_id, post_id]
+    );
+
+    if (!commentResult.rows.length) {
+      return res.status(404).json({ error: 'Comentario no encontrado' });
+    }
+
+    // Check permissions
+    const canDelete = await canDeleteClanContent(pool, clan_id, commentResult.rows[0].author_pet_id, activePet);
+    if (!canDelete) {
+      return res.status(403).json({ error: 'No tienes permisos para eliminar este comentario' });
+    }
+
+    await pool.query(
+      'DELETE FROM clan_post_comments WHERE id = $1',
+      [comment_id]
+    );
+
+    res.json({ success: true, message: 'Comentario eliminado' });
+  } catch (err) {
+    console.error('Error al eliminar comentario:', err);
+    res.status(500).json({ error: 'Error al eliminar comentario' });
+  }
+});
+
+// ========== CLAN GALLERY ==========
+
+// Subir imagen a galería del clan
+router.post('/:clan_id/gallery', authenticate, uploadSingle, processImage, async (req, res) => {
+  const { clan_id } = req.params;
+
+  if (!req.file) {
+    return res.status(400).json({ error: 'No se cargó archivo' });
+  }
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member of clan
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(403).json({ error: 'No eres miembro del clan' });
+    }
+
+    // Upload to Cloudinary
+    const image_url = await uploadToCloudinary(
+      req.file.buffer,
+      req.file.originalname,
+      `clans/${clan_id}`
+    );
+
+    // Save to database
+    const imageId = uuidv4();
+    await pool.query(
+      `INSERT INTO clan_gallery (id, clan_id, image_url, uploaded_by)
+       VALUES ($1, $2, $3, $4)`,
+      [imageId, clan_id, image_url, activePet]
+    );
+
+    const result = await pool.query(
+      'SELECT id, image_url, uploaded_by, created_at FROM clan_gallery WHERE id = $1',
+      [imageId]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error('Error al subir imagen:', err);
+    res.status(500).json({ error: 'Error al subir imagen' });
+  }
+});
+
+// Obtener galería del clan
+router.get('/:clan_id/gallery', authenticate, async (req, res) => {
+  const { clan_id } = req.params;
+  const { limit = 20, offset = 0 } = req.query;
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(403).json({ error: 'No eres miembro del clan' });
+    }
+
+    const [images, total] = await Promise.all([
+      pool.query(
+        `SELECT cg.id, cg.image_url, cg.uploaded_by, p.name as uploader_name, p.username as uploader_username, cg.created_at
+         FROM clan_gallery cg
+         JOIN pets p ON cg.uploaded_by = p.id
+         WHERE cg.clan_id = $1
+         ORDER BY cg.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [clan_id, parseInt(limit), parseInt(offset)]
+      ),
+      pool.query('SELECT COUNT(*) FROM clan_gallery WHERE clan_id = $1', [clan_id]),
+    ]);
+
+    res.json({
+      images: images.rows,
+      total: parseInt(total.rows[0].count),
+    });
+  } catch (err) {
+    console.error('Error al obtener galería:', err);
+    res.status(500).json({ error: 'Error al obtener galería' });
+  }
+});
+
+// Eliminar imagen de galería del clan
+router.delete('/:clan_id/gallery/:image_id', authenticate, async (req, res) => {
+  const { clan_id, image_id } = req.params;
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Get image
+    const imageResult = await pool.query(
+      'SELECT uploaded_by FROM clan_gallery WHERE id = $1 AND clan_id = $2',
+      [image_id, clan_id]
+    );
+
+    if (!imageResult.rows.length) {
+      return res.status(404).json({ error: 'Imagen no encontrada' });
+    }
+
+    // Check permissions
+    const canDelete = await canDeleteClanContent(pool, clan_id, imageResult.rows[0].uploaded_by, activePet);
+    if (!canDelete) {
+      return res.status(403).json({ error: 'No tienes permisos para eliminar esta imagen' });
+    }
+
+    await pool.query(
+      'DELETE FROM clan_gallery WHERE id = $1',
+      [image_id]
+    );
+
+    res.json({ success: true, message: 'Imagen eliminada' });
+  } catch (err) {
+    console.error('Error al eliminar imagen:', err);
+    res.status(500).json({ error: 'Error al eliminar imagen' });
+  }
+});
+
+// Comentar en imagen de galería
+router.post('/:clan_id/gallery/:image_id/comments', authenticate, async (req, res) => {
+  const { content, sent_as_owner = false } = req.body;
+  const { clan_id, image_id } = req.params;
+
+  if (!content?.trim()) {
+    return res.status(400).json({ error: 'El comentario es requerido' });
+  }
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(403).json({ error: 'No eres miembro del clan' });
+    }
+
+    // Check if image exists
+    const imageResult = await pool.query(
+      'SELECT id FROM clan_gallery WHERE id = $1 AND clan_id = $2',
+      [image_id, clan_id]
+    );
+
+    if (!imageResult.rows.length) {
+      return res.status(404).json({ error: 'Imagen no encontrada' });
+    }
+
+    // Create comment
+    const commentId = uuidv4();
+    await pool.query(
+      `INSERT INTO clan_gallery_comments (id, gallery_image_id, author_pet_id, content, sent_as_owner)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [commentId, image_id, activePet, content, sent_as_owner === true]
+    );
+
+    // Get comment with author info
+    const authorInfo = await getAuthorInfo(pool, activePet, sent_as_owner);
+    const commentData = await pool.query(
+      'SELECT * FROM clan_gallery_comments WHERE id = $1',
+      [commentId]
+    );
+
+    res.status(201).json({
+      ...commentData.rows[0],
+      author_name: authorInfo?.author_name,
+      author_avatar: authorInfo?.author_avatar,
+      author_username: authorInfo?.author_username,
+      author_owner_name: authorInfo?.author_owner_name,
+      author_owner_username: authorInfo?.author_owner_username,
+    });
+  } catch (err) {
+    console.error('Error al crear comentario:', err);
+    res.status(500).json({ error: 'Error al crear comentario' });
+  }
+});
+
+// Obtener comentarios de imagen
+router.get('/:clan_id/gallery/:image_id/comments', authenticate, async (req, res) => {
+  const { clan_id, image_id } = req.params;
+  const { limit = 50, offset = 0 } = req.query;
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(403).json({ error: 'No eres miembro del clan' });
+    }
+
+    const comments = await pool.query(
+      `SELECT cgc.*,
+        CASE WHEN cgc.sent_as_owner THEN c.name ELSE p.name END AS author_name,
+        CASE WHEN cgc.sent_as_owner THEN c.avatar_url ELSE p.avatar_url END AS author_avatar,
+        CASE WHEN cgc.sent_as_owner THEN c.username ELSE p.username END AS author_username,
+        CASE WHEN cgc.sent_as_owner THEN NULL ELSE c.name END AS author_owner_name,
+        CASE WHEN cgc.sent_as_owner THEN NULL ELSE c.username END AS author_owner_username
+       FROM clan_gallery_comments cgc
+       JOIN pets p ON cgc.author_pet_id = p.id
+       JOIN companions c ON c.id = p.companion_id
+       WHERE cgc.gallery_image_id = $1
+       ORDER BY cgc.created_at ASC
+       LIMIT $2 OFFSET $3`,
+      [image_id, parseInt(limit), parseInt(offset)]
+    );
+
+    res.json(comments.rows);
+  } catch (err) {
+    console.error('Error al obtener comentarios:', err);
+    res.status(500).json({ error: 'Error al obtener comentarios' });
+  }
+});
+
+// Eliminar comentario de imagen
+router.delete('/:clan_id/gallery/:image_id/comments/:comment_id', authenticate, async (req, res) => {
+  const { clan_id, image_id, comment_id } = req.params;
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Get comment
+    const commentResult = await pool.query(
+      'SELECT author_pet_id FROM clan_gallery_comments WHERE id = $1 AND gallery_image_id = $2',
+      [comment_id, image_id]
+    );
+
+    if (!commentResult.rows.length) {
+      return res.status(404).json({ error: 'Comentario no encontrado' });
+    }
+
+    // Check permissions
+    const canDelete = await canDeleteClanContent(pool, clan_id, commentResult.rows[0].author_pet_id, activePet);
+    if (!canDelete) {
+      return res.status(403).json({ error: 'No tienes permisos para eliminar este comentario' });
+    }
+
+    await pool.query(
+      'DELETE FROM clan_gallery_comments WHERE id = $1',
+      [comment_id]
+    );
+
+    res.json({ success: true, message: 'Comentario eliminado' });
+  } catch (err) {
+    console.error('Error al eliminar comentario:', err);
+    res.status(500).json({ error: 'Error al eliminar comentario' });
+  }
+});
+
+// ========== CLAN CHAT ==========
+
+// Enviar mensaje al chat del clan
+router.post('/:clan_id/messages', authenticate, async (req, res) => {
+  const { content, sent_as_owner = false } = req.body;
+  const { clan_id } = req.params;
+
+  if (!content?.trim()) {
+    return res.status(400).json({ error: 'El mensaje no puede estar vacío' });
+  }
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member of clan
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(403).json({ error: 'No eres miembro del clan' });
+    }
+
+    // Create message
+    const messageId = uuidv4();
+    await pool.query(
+      `INSERT INTO clan_chat_messages (id, clan_id, author_pet_id, content, sent_as_owner)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [messageId, clan_id, activePet, content, sent_as_owner === true]
+    );
+
+    // Get message with author info
+    const authorInfo = await getAuthorInfo(pool, activePet, sent_as_owner);
+    const messageData = await pool.query(
+      'SELECT * FROM clan_chat_messages WHERE id = $1',
+      [messageId]
+    );
+
+    res.status(201).json({
+      ...messageData.rows[0],
+      author_name: authorInfo?.author_name,
+      author_avatar: authorInfo?.author_avatar,
+      author_username: authorInfo?.author_username,
+      author_owner_name: authorInfo?.author_owner_name,
+      author_owner_username: authorInfo?.author_owner_username,
+    });
+  } catch (err) {
+    console.error('Error al enviar mensaje:', err);
+    res.status(500).json({ error: 'Error al enviar mensaje' });
+  }
+});
+
+// Obtener mensajes del chat del clan
+router.get('/:clan_id/messages', authenticate, async (req, res) => {
+  const { clan_id } = req.params;
+  const { limit = 50, offset = 0 } = req.query;
+
+  try {
+    // Get active pet
+    const activePet = await getActivePet(pool, req.user.id);
+    if (!activePet) {
+      return res.status(400).json({ error: 'No tienes mascotas' });
+    }
+
+    // Check if member
+    const { isMember } = await checkClanMemberRole(pool, clan_id, activePet);
+    if (!isMember) {
+      return res.status(403).json({ error: 'No eres miembro del clan' });
+    }
+
+    const messages = await pool.query(
+      `SELECT ccm.*,
+        CASE WHEN ccm.sent_as_owner THEN c.name ELSE p.name END AS author_name,
+        CASE WHEN ccm.sent_as_owner THEN c.avatar_url ELSE p.avatar_url END AS author_avatar,
+        CASE WHEN ccm.sent_as_owner THEN c.username ELSE p.username END AS author_username,
+        CASE WHEN ccm.sent_as_owner THEN NULL ELSE c.name END AS author_owner_name,
+        CASE WHEN ccm.sent_as_owner THEN NULL ELSE c.username END AS author_owner_username
+       FROM clan_chat_messages ccm
+       JOIN pets p ON ccm.author_pet_id = p.id
+       JOIN companions c ON c.id = p.companion_id
+       WHERE ccm.clan_id = $1
+       ORDER BY ccm.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [clan_id, parseInt(limit), parseInt(offset)]
+    );
+
+    // Reverse to show chronological order
+    res.json(messages.rows.reverse());
+  } catch (err) {
+    console.error('Error al obtener mensajes:', err);
+    res.status(500).json({ error: 'Error al obtener mensajes' });
   }
 });
 

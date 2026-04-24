@@ -216,6 +216,83 @@ const runMigrations = async () => {
     );
     CREATE INDEX IF NOT EXISTS idx_companion_gallery_comments_gallery_id ON companion_gallery_comments(gallery_image_id);
   `);
+  // Clan posts and comments
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS clan_posts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      clan_id UUID NOT NULL REFERENCES clans(id) ON DELETE CASCADE,
+      author_pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      sent_as_owner BOOLEAN DEFAULT FALSE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_clan_posts_clan_id ON clan_posts(clan_id);
+    CREATE INDEX IF NOT EXISTS idx_clan_posts_author_pet_id ON clan_posts(author_pet_id);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS clan_post_comments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      post_id UUID NOT NULL REFERENCES clan_posts(id) ON DELETE CASCADE,
+      author_pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      sent_as_owner BOOLEAN DEFAULT FALSE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_clan_post_comments_post_id ON clan_post_comments(post_id);
+  `);
+  // Clan gallery and gallery comments
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS clan_gallery (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      clan_id UUID NOT NULL REFERENCES clans(id) ON DELETE CASCADE,
+      image_url VARCHAR NOT NULL,
+      uploaded_by UUID NOT NULL REFERENCES pets(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_clan_gallery_clan_id ON clan_gallery(clan_id);
+    CREATE INDEX IF NOT EXISTS idx_clan_gallery_uploaded_by ON clan_gallery(uploaded_by);
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS clan_gallery_comments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      gallery_image_id UUID NOT NULL REFERENCES clan_gallery(id) ON DELETE CASCADE,
+      author_pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      sent_as_owner BOOLEAN DEFAULT FALSE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_clan_gallery_comments_gallery_id ON clan_gallery_comments(gallery_image_id);
+  `);
+  // Clan chat messages
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS clan_chat_messages (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      clan_id UUID NOT NULL REFERENCES clans(id) ON DELETE CASCADE,
+      author_pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      sent_as_owner BOOLEAN DEFAULT FALSE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_clan_chat_messages_clan_id ON clan_chat_messages(clan_id);
+    CREATE INDEX IF NOT EXISTS idx_clan_chat_messages_created_at ON clan_chat_messages(created_at);
+  `);
+  // Clan join requests
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS clan_join_requests (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      clan_id UUID NOT NULL REFERENCES clans(id) ON DELETE CASCADE,
+      pet_id UUID NOT NULL REFERENCES pets(id) ON DELETE CASCADE,
+      requested_at TIMESTAMPTZ DEFAULT NOW(),
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      UNIQUE (clan_id, pet_id),
+      CHECK (status IN ('pending', 'approved', 'rejected'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_clan_join_requests_clan_id ON clan_join_requests(clan_id);
+    CREATE INDEX IF NOT EXISTS idx_clan_join_requests_status ON clan_join_requests(status);
+  `);
 };
 
 app.listen(PORT, async () => {
