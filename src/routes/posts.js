@@ -55,12 +55,32 @@ router.post('/pets/:pet_id/posts', authenticate, async (req, res) => {
     const pet = await pool.query('SELECT companion_id FROM pets WHERE id = $1', [req.params.pet_id]);
     if (!pet.rows.length) return res.status(404).json({ error: 'Pet not found' });
 
+    // Get companion's active pet, fallback to first pet
+    const companionPet = await pool.query(
+      'SELECT active_pet_id FROM companions WHERE id = $1',
+      [req.user.id]
+    );
+
+    let activePetId = companionPet.rows[0]?.active_pet_id;
+
+    if (!activePetId) {
+      const firstPet = await pool.query(
+        'SELECT id FROM pets WHERE companion_id = $1 ORDER BY created_at LIMIT 1',
+        [req.user.id]
+      );
+      activePetId = firstPet.rows[0]?.id;
+    }
+
+    if (!activePetId) {
+      return res.status(400).json({ error: 'You must have an active pet to post' });
+    }
+
     const id = uuidv4();
     const result = await pool.query(
       `INSERT INTO pet_posts (id, pet_id, content, sent_as_owner)
        VALUES ($1, $2, $3, $4)
        RETURNING id, content, sent_as_owner, created_at, pet_id`,
-      [id, req.params.pet_id, content, sent_as_owner === true]
+      [id, activePetId, content, sent_as_owner === true]
     );
 
     const post = result.rows[0];
@@ -74,7 +94,7 @@ router.post('/pets/:pet_id/posts', authenticate, async (req, res) => {
        FROM pets p
        JOIN companions c ON c.id = p.companion_id
        WHERE p.id = $1`,
-      [req.params.pet_id, post.sent_as_owner]
+      [post.pet_id, post.sent_as_owner]
     );
 
     res.status(201).json({ ...post, ...authorData.rows[0] });
