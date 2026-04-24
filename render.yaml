@@ -2,7 +2,7 @@ services:
   - type: web
     name: wahu-backend
     runtime: node
-    startCommand: npm run dev
+    startCommand: npm run start
     envVars:
       - key: NODE_ENV
         value: production
