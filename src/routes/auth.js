@@ -251,7 +251,6 @@ router.get('/has-password', async (req, res) => {
       return res.status(404).json({ error: 'Usuario no encontrado' });
 
     const user = result.rows[0];
-    console.log('DEBUG has-password:', { hasPassword: !!user.password_hash, passwordSetByUser: user.password_set_by_user });
     res.json({
       hasPassword: !!user.password_hash,
       passwordSetByUser: user.password_set_by_user || false
@@ -317,16 +316,6 @@ router.put('/change-password', async (req, res) => {
     console.error(err);
     res.status(500).json({ error: 'Error al cambiar contraseña' });
   }
-});
-
-// Endpoint de debug temporal
-router.get('/debug-has-password', async (req, res) => {
-  res.json({
-    message: 'DEBUG: Este es el endpoint de debug',
-    hasPassword: true,
-    passwordSetByUser: false,
-    timestamp: new Date().toISOString()
-  });
 });
 
 export default router;
