@@ -42,8 +42,8 @@ router.post('/register', async (req, res) => {
     const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     await pool.query(
-      `INSERT INTO companions (id, username, name, email, password_hash, email_verified, verification_token, verification_token_expires_at)
-       VALUES ($1,$2,$3,$4,$5,false,$6,$7)`,
+      `INSERT INTO companions (id, username, name, email, password_hash, email_verified, verification_token, verification_token_expires_at, password_set_by_user)
+       VALUES ($1,$2,$3,$4,$5,false,$6,$7,true)`,
       [id, username, name, email, hash, token, expires]
     );
     await pool.query(
@@ -183,8 +183,8 @@ router.post('/google', async (req, res) => {
       const finalUsername = usernameExists.rows.length > 0 ? `${username}_${Date.now().toString().slice(-4)}` : username;
 
       await pool.query(
-        `INSERT INTO companions (id, username, name, email, avatar_url, password_hash, email_verified)
-         VALUES ($1,$2,$3,$4,$5,$6,true)`,
+        `INSERT INTO companions (id, username, name, email, avatar_url, password_hash, email_verified, password_set_by_user)
+         VALUES ($1,$2,$3,$4,$5,$6,true,false)`,
         [id, finalUsername, name, email, picture || null, await bcrypt.hash(uuidv4(), 10)]
       );
       await pool.query('INSERT INTO companion_croquetas (companion_id, balance) VALUES ($1, 0)', [id]);
@@ -246,12 +246,16 @@ router.get('/has-password', async (req, res) => {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const result = await pool.query('SELECT password_hash FROM companions WHERE id=$1', [decoded.id]);
+    const result = await pool.query('SELECT password_hash, password_set_by_user FROM companions WHERE id=$1', [decoded.id]);
     if (result.rows.length === 0)
       return res.status(404).json({ error: 'Usuario no encontrado' });
 
-    const hasPassword = !!result.rows[0].password_hash;
-    res.json({ hasPassword });
+    const user = result.rows[0];
+    console.log('DEBUG has-password:', { hasPassword: !!user.password_hash, passwordSetByUser: user.password_set_by_user });
+    res.json({
+      hasPassword: !!user.password_hash,
+      passwordSetByUser: user.password_set_by_user || false
+    });
   } catch (err) {
     if (err.name === 'JsonWebTokenError')
       return res.status(401).json({ error: 'Token inválido' });
@@ -278,17 +282,23 @@ router.put('/change-password', async (req, res) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Obtener usuario actual
-    const result = await pool.query('SELECT password_hash FROM companions WHERE id=$1', [decoded.id]);
+    const result = await pool.query('SELECT password_hash, password_set_by_user FROM companions WHERE id=$1', [decoded.id]);
     if (result.rows.length === 0)
       return res.status(404).json({ error: 'Usuario no encontrado' });
 
     const user = result.rows[0];
 
-    // Si el usuario tiene contraseña (no se registró con Google), validar la contraseña actual
-    if (user.password_hash) {
+    // Si el usuario ya ha establecido una contraseña real, validar la contraseña actual
+    if (user.password_set_by_user) {
       if (!currentPassword)
         return res.status(400).json({ error: 'La contraseña actual es requerida' });
 
+      const valid = await bcrypt.compare(currentPassword, user.password_hash);
+      if (!valid)
+        return res.status(401).json({ error: 'Contraseña actual incorrecta' });
+    } else if (currentPassword) {
+      // Si es la primera vez que establece contraseña pero proporciona la actual, validar de todas formas
+      // (por si el cliente intenta pasar currentPassword de todos modos)
       const valid = await bcrypt.compare(currentPassword, user.password_hash);
       if (!valid)
         return res.status(401).json({ error: 'Contraseña actual incorrecta' });
@@ -297,8 +307,8 @@ router.put('/change-password', async (req, res) => {
     // Hash nueva contraseña
     const newHash = await bcrypt.hash(newPassword, 10);
 
-    // Actualizar contraseña
-    await pool.query('UPDATE companions SET password_hash=$1 WHERE id=$2', [newHash, decoded.id]);
+    // Actualizar contraseña y marcar como establecida por el usuario
+    await pool.query('UPDATE companions SET password_hash=$1, password_set_by_user=true WHERE id=$2', [newHash, decoded.id]);
 
     res.json({ message: 'Contraseña actualizada correctamente' });
   } catch (err) {
@@ -307,6 +317,16 @@ router.put('/change-password', async (req, res) => {
     console.error(err);
     res.status(500).json({ error: 'Error al cambiar contraseña' });
   }
+});
+
+// Endpoint de debug temporal
+router.get('/debug-has-password', async (req, res) => {
+  res.json({
+    message: 'DEBUG: Este es el endpoint de debug',
+    hasPassword: true,
+    passwordSetByUser: false,
+    timestamp: new Date().toISOString()
+  });
 });
 
 export default router;

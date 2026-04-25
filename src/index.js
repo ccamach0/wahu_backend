@@ -71,7 +71,8 @@ const runMigrations = async () => {
       ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false,
       ADD COLUMN IF NOT EXISTS verification_token VARCHAR(128),
       ADD COLUMN IF NOT EXISTS verification_token_expires_at TIMESTAMPTZ,
-      ADD COLUMN IF NOT EXISTS active_pet_id UUID;
+      ADD COLUMN IF NOT EXISTS active_pet_id UUID,
+      ADD COLUMN IF NOT EXISTS password_set_by_user BOOLEAN NOT NULL DEFAULT false;
   `);
   await pool.query(`UPDATE companions SET email_verified=true WHERE email_verified=false AND verification_token IS NULL`);
   // Migrar chat a esquema basado en mascotas (idempotente)
