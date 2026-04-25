@@ -243,8 +243,8 @@ router.put('/change-password', async (req, res) => {
   if (!authHeader)
     return res.status(401).json({ error: 'Token requerido' });
 
-  if (!currentPassword || !newPassword)
-    return res.status(400).json({ error: 'Contraseña actual y nueva son requeridas' });
+  if (!newPassword)
+    return res.status(400).json({ error: 'La nueva contraseña es requerida' });
 
   if (newPassword.length < 6)
     return res.status(400).json({ error: 'La nueva contraseña debe tener al menos 6 caracteres' });
@@ -260,10 +260,15 @@ router.put('/change-password', async (req, res) => {
 
     const user = result.rows[0];
 
-    // Validar contraseña actual
-    const valid = await bcrypt.compare(currentPassword, user.password_hash);
-    if (!valid)
-      return res.status(401).json({ error: 'Contraseña actual incorrecta' });
+    // Si el usuario tiene contraseña (no se registró con Google), validar la contraseña actual
+    if (user.password_hash) {
+      if (!currentPassword)
+        return res.status(400).json({ error: 'La contraseña actual es requerida' });
+
+      const valid = await bcrypt.compare(currentPassword, user.password_hash);
+      if (!valid)
+        return res.status(401).json({ error: 'Contraseña actual incorrecta' });
+    }
 
     // Hash nueva contraseña
     const newHash = await bcrypt.hash(newPassword, 10);
