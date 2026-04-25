@@ -236,4 +236,48 @@ router.put('/active-pet', async (req, res) => {
   }
 });
 
+router.put('/change-password', async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader)
+    return res.status(401).json({ error: 'Token requerido' });
+
+  if (!currentPassword || !newPassword)
+    return res.status(400).json({ error: 'Contraseña actual y nueva son requeridas' });
+
+  if (newPassword.length < 6)
+    return res.status(400).json({ error: 'La nueva contraseña debe tener al menos 6 caracteres' });
+
+  try {
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Obtener usuario actual
+    const result = await pool.query('SELECT password_hash FROM companions WHERE id=$1', [decoded.id]);
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+
+    const user = result.rows[0];
+
+    // Validar contraseña actual
+    const valid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!valid)
+      return res.status(401).json({ error: 'Contraseña actual incorrecta' });
+
+    // Hash nueva contraseña
+    const newHash = await bcrypt.hash(newPassword, 10);
+
+    // Actualizar contraseña
+    await pool.query('UPDATE companions SET password_hash=$1 WHERE id=$2', [newHash, decoded.id]);
+
+    res.json({ message: 'Contraseña actualizada correctamente' });
+  } catch (err) {
+    if (err.name === 'JsonWebTokenError')
+      return res.status(401).json({ error: 'Token inválido' });
+    console.error(err);
+    res.status(500).json({ error: 'Error al cambiar contraseña' });
+  }
+});
+
 export default router;
