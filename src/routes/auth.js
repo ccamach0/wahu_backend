@@ -236,6 +236,30 @@ router.put('/active-pet', async (req, res) => {
   }
 });
 
+router.get('/has-password', async (req, res) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader)
+    return res.status(401).json({ error: 'Token requerido' });
+
+  try {
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const result = await pool.query('SELECT password_hash FROM companions WHERE id=$1', [decoded.id]);
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+
+    const hasPassword = !!result.rows[0].password_hash;
+    res.json({ hasPassword });
+  } catch (err) {
+    if (err.name === 'JsonWebTokenError')
+      return res.status(401).json({ error: 'Token inválido' });
+    console.error(err);
+    res.status(500).json({ error: 'Error al verificar' });
+  }
+});
+
 router.put('/change-password', async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   const authHeader = req.headers.authorization;
